@@ -1,2 +1,4 @@
 # PIPv4_change_detect
-THE CLOUDFLARE FEATURE OF FHIS SCRIPT AMONGST OTHER THIGHS AREN'T WORKING
+Alerts the SysAdmin via mail if the public IP has changed.
+Also has the ability to contact the Cloudflare API and modify records when this happens.
+(Unfinished)
