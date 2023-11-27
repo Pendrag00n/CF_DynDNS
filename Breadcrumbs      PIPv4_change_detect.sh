@@ -1,77 +1,116 @@
 #!/bin/bash
-# Script that checks if the public IPv4 address has changed
+# Script that checks if the public ipv4 address has changed
 
 # Vars
-IP_FILE="./.pubip.txt"
-IP=$(curl -s http://ipv4.icanhazip.com)
+ip_file="./.pubip.txt"
+ip=$(curl -s http://ipv4.icanhazip.com)
 mail_receiver="example@gmail.com"
 
 # Cloudflare vars
-take_action="false"
-ZONE_ID="zoneide"
-RECORD_ID="RECORD_ID"
-EMAIL="juliofelipeHI@gmail.com"
-ACCOUNT_ID="accountid"
-API_TOKEN="apitoken"
-DOMAINS=(sub.domain.com sub2.domain.com sub3.domain.com)
+take_action=true
+zone_id="zone_id"
+api_token="api_token"
+DOMAINS=(mail.julete.xyz)
+
+# Make sure script isn't running as root
+if [ $EUID -eq 0 ]; then
+    echo "NO NEED TO RUN AS ROOT!"
+    exit 1
+fi
 
 # Wait for the network to be up
-counter=0
-until ping -c1 -W1 1.1.1.1 || [ "$counter" -gt 12 ]; do
-    echo "Waiting for network"
+counter=1
+until ping -q -c1 -W1 1.1.1.1   || [ "$counter" -gt 12 ]; do
+    echo "Waiting for network. Attempt ($counter/12)."
     sleep 10
     counter=$((counter+1))
 done
 
 # Check if the network is up, if not, exit
 if [ "$counter" -gt 12 ]; then
-    echo "Network not available"
+    echo "Network not available. Exiting..."
     exit 1
 fi
 
 # Check if the file exists
-if [ -f $IP_FILE ]; then
-    # Get the old IP
-    OLD_IP=$(cat $IP_FILE)
-    # Check if the IP has changed
-    if [ "$IP" != "$OLD_IP" ]; then
-        # Save the new IP
-        echo "$IP" > $IP_FILE
+if [ -f $ip_file ]; then
+    chmod 644 $ip_file
+    old_ip=$(cat $ip_file)
+
+    # Check if the ip has changed
+    if [ "$ip" != "$old_ip" ]; then
+	    changed=true
+        # Save the new ip
+        echo "$ip" > $ip_file
         # Send an email
-        echo "The public IP has changed to $IP" | mail -s "Public IP changed" "$mail_receiver"
+        echo "The public ip has changed to $ip" | mail -s "Public ip changed" "$mail_receiver"
+    else
+        echo "The public ip hasn't changed. Exiting..."
+        exit 0
     fi
+
 else
-        # Save the IP
-        echo "Creating $IP_FILE"
-        echo "$IP" > $IP_FILE
+    # Save the ip
+    echo "Creating $ip_file for the next run. Exiting without errors..."
+    echo "$ip" > $ip_file
+    chmod 644 $ip_file
+    exit 0
 fi
-if [ "$take_action" = "true" ]; then
-    encountered_error="false"
+
+if [[ $take_action = true && $changed = true ]]; then
+    encountered_error=false
 
     # Modify cludflare DNS record for each domain
     for i in "${DOMAINS[@]}"; do
+
         if nslookup $i | grep NXDOMAIN ; then
             echo "Domain $i not found, skipping"
             continue
         fi
 
-        curl -X PUT \
-        --url "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records/$RECORD_ID" \
-        -H "X-Auth-Email: $EMAIL" \
-        -H "X-Auth-Key: $API_TOKEN" \
-        -H "Content-Type: application/json" \
-        --data '{"type":"A","name":"'$i'","content":"'$IP'", "ttl":"", "proxied":""}'
+	    # Extract all the zone data and store it in variables
+	    record_data=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records?type=A&name=$i" \
+                        -H "Content-Type: application/json" \
+	                    -H "Authorization: Bearer $api_token" | jq . )
 
-        if [ $? -ne 0 ]; then
-            encountered_error="true"
+        record_id=$(echo "$record_data" | grep '"id":' | cut -d '"' -f 4)
+        type=$(echo "$record_data" | grep '"type":' | cut -d '"' -f 4)
+        name=$(echo "$record_data" | grep '"name":' | cut -d '"' -f 4)
+        ttl=$(echo "$record_data" | grep '"ttl":' | cut -d ":" -f 2 | cut -d "," -f 1 | cut -d " " -f 2)
+        proxied=$(echo "$record_data" | grep '"proxied":' | cut -d ":" -f 2 | cut -d "," -f 1 | cut -d " " -f 2)
+
+        echo ""
+        echo " ** THIS IS THE RECORD DATA FOR: $i"
+
+        echo "THIS IS THE RECORD ID: $record_id"
+        echo "THIS IS THE TYPE: $type"
+        echo "THIS IS THE NAME: $name"
+        echo "THIS IS THE CONTENT: $ip"
+        echo "THIS IS THE TTL: $ttl"
+        echo "THIS IS THE PROXIED: $proxied"
+
+	    # Update the ip of the record using the Cloudflare API
+	    update_request=$(curl -X PUT \
+            --url "https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records/$record_id" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $api_token" \
+            --data '{"type":"'$type'","name":"'$name'","content":"'$ip'","ttl":'$ttl',"proxied":'$proxied'}' | jq .)
+
+        # Check if the update was successful
+        if grep '"success":true,' "$update_request" ; then
+            echo "Successfully updated DNS record for $i"
         else
-            echo "DNS record for $i updated. Now pointing to $IP"
-        fi
+            encountered_error=true
+            echo "Failed to update DNS record for $i"
+        fi        
+
     done
+
+	if [ $encountered_error = true ]; then
+        # Send an email
+    	echo "One or more DNS records failed to update" | mail -s "Failed to update DNS records" "$mail_receiver"
+    	exit 1
+	fi
 fi
-if [ "$encountered_error" = "true" ]; then
-    # Send an email
-    echo "One or more DNS records failed to update" | mail -s "Failed to update DNS records" "$mail_receiver"
-    exit 1
-fi
+
 exit 0
