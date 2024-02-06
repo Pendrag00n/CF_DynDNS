@@ -32,6 +32,12 @@ if [ "$counter" -gt 12 ]; then
     exit 1
 fi
 
+# Check if the $IP is empty
+if [ -z "$ip" ]; then
+    echo "Failed to get the public ip. Maybe wait for the next run. Exiting..."
+    exit 1
+fi
+
 # Check if the file exists
 if [ -f $ip_file ]; then
     chmod 644 $ip_file
